@@ -8,6 +8,7 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
 
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "cresca-openclaw-runtime" });
@@ -58,12 +59,12 @@ app.post("/telegram/webhook", async (req, res) => {
 
       const result = await runtimeResponse.json();
 
-      if (result.results) {
+      if (result.results && result.results.length > 0) {
         responseText = result.results
-          .map((r, i) => `${i + 1}. ${r.name} | ${r.website} | ${r.phone}`)
-          .join("\n");
+          .map((r, i) => `${i + 1}. ${r.name}\n?? ${r.address || "N/A"}\n?? ${r.phone || "N/A"}\n?? ${r.website || "N/A"}`)
+          .join("\n\n");
       } else {
-        responseText = "No leads found";
+        responseText = result.message || "No leads found";
       }
     }
 
@@ -103,17 +104,65 @@ app.post("/execute", async (req, res) => {
   try {
     if (data?.type === "lead_generation") {
       const niche = data.niche || "businesses";
+      const location = data.location || "USA";
       const limit = data.limit || 5;
+
+      if (!GOOGLE_PLACES_API_KEY) {
+        return res.status(500).json({
+          success: false,
+          message: "Missing GOOGLE_PLACES_API_KEY"
+        });
+      }
+
+      const query = `${niche} in ${location}`;
+
+      const response = await fetch("https://places.googleapis.com/v1/places:searchText", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+          "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.googleMapsUri"
+        },
+        body: JSON.stringify({
+          textQuery: query,
+          maxResultCount: limit
+        })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        return res.status(response.status).json({
+          success: false,
+          message: "Google Places API error",
+          raw: result
+        });
+      }
+
+      if (!result.places || result.places.length === 0) {
+        return res.json({
+          success: false,
+          message: `No results found for: ${query}`,
+          results: []
+        });
+      }
+
+      const leads = result.places.map((place) => ({
+        name: place.displayName?.text || "N/A",
+        address: place.formattedAddress || "N/A",
+        phone: place.nationalPhoneNumber || "N/A",
+        website: place.websiteUri || "N/A",
+        rating: place.rating || "N/A",
+        reviews: place.userRatingCount || 0,
+        mapsUrl: place.googleMapsUri || "N/A"
+      }));
 
       return res.json({
         success: true,
         type: "lead_generation",
-        message: "Lead generation simulated",
-        results: Array.from({ length: limit }).map((_, i) => ({
-          name: `${niche} Company ${i + 1}`,
-          website: `https://example${i + 1}.com`,
-          phone: `555-000-${i + 1}`
-        }))
+        message: "Real leads from Google Places",
+        query,
+        results: leads
       });
     }
 
@@ -125,6 +174,7 @@ app.post("/execute", async (req, res) => {
     });
 
   } catch (error) {
+    console.error("Execute error:", error);
     return res.status(500).json({
       success: false,
       error: error.message
