@@ -30,12 +30,37 @@ app.post("/execute", async (req, res) => {
     });
   }
 
-  return res.json({
-    success: true,
-    message: "Task received successfully",
-    task,
-    data: data || null
-  });
+  try {
+    if (data?.type === "lead_generation") {
+      const niche = data.niche || "businesses";
+      const location = data.location || "USA";
+      const limit = data.limit || 5;
+
+      return res.json({
+        success: true,
+        type: "lead_generation",
+        message: "Lead generation simulated",
+        results: Array.from({ length: limit }).map((_, i) => ({
+          name: `${niche} Company ${i + 1}`,
+          website: `https://example${i + 1}.com`,
+          phone: `555-000-${i + 1}`
+        }))
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "Task received but no handler implemented",
+      task,
+      data
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 const port = process.env.PORT || 3000;
