@@ -19,8 +19,6 @@ app.get("/health", (req, res) => {
 
 app.post("/telegram/webhook", async (req, res) => {
   try {
-    console.log("Telegram webhook received:", JSON.stringify(req.body));
-
     const message = req.body.message;
     if (!message) return res.sendStatus(200);
 
@@ -38,7 +36,35 @@ app.post("/telegram/webhook", async (req, res) => {
     }
 
     if (text.startsWith("/findleads")) {
-      responseText = "Leads:\n1. Roofing Co A\n2. Roofing Co B\n3. Roofing Co C";
+      const parts = text.split(" ");
+      const niche = parts[1] || "businesses";
+      const location = parts.slice(2).join(" ") || "USA";
+
+      const runtimeResponse = await fetch(`http://localhost:${port}/execute`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          task: `Find ${niche} leads in ${location}`,
+          data: {
+            type: "lead_generation",
+            niche,
+            location,
+            limit: 5
+          }
+        })
+      });
+
+      const result = await runtimeResponse.json();
+
+      if (result.results) {
+        responseText = result.results
+          .map((r, i) => `${i + 1}. ${r.name} | ${r.website} | ${r.phone}`)
+          .join("\n");
+      } else {
+        responseText = "No leads found";
+      }
     }
 
     if (!TELEGRAM_TOKEN) {
@@ -46,14 +72,16 @@ app.post("/telegram/webhook", async (req, res) => {
       return res.sendStatus(500);
     }
 
-    const telegramResponse = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: responseText })
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: responseText
+      })
     });
-
-    const telegramData = await telegramResponse.json();
-    console.log("Telegram API response:", telegramData);
 
     res.sendStatus(200);
   } catch (err) {
@@ -66,7 +94,10 @@ app.post("/execute", async (req, res) => {
   const { task, data } = req.body;
 
   if (!task) {
-    return res.status(400).json({ success: false, error: "Missing task" });
+    return res.status(400).json({
+      success: false,
+      error: "Missing task"
+    });
   }
 
   try {
@@ -88,12 +119,16 @@ app.post("/execute", async (req, res) => {
 
     return res.json({
       success: true,
-      message: "Task received",
+      message: "Task received but no handler implemented",
       task,
       data
     });
+
   } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
