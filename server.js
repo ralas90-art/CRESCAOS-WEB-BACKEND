@@ -12,6 +12,11 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
+// Airtable Config
+const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
+const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
+const AIRTABLE_TABLE_NAME = process.env.AIRTABLE_TABLE_NAME;
+
 // Base Routes
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "cresca-openclaw-runtime" });
@@ -20,6 +25,71 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({ status: "healthy" });
 });
+
+/**
+ * AIRTABLE PERSISTENCE LOGIC
+ */
+async function saveLeadsToAirtable(leads, niche, location) {
+  if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !AIRTABLE_TABLE_NAME) {
+    console.warn("⚠️ Airtable credentials missing. Skipping persistence.");
+    return;
+  }
+
+  const airtableUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE_NAME)}`;
+
+  for (const lead of leads) {
+    try {
+      // 1. Check for duplicates (Business Name + Phone)
+      const formula = `AND({Business Name} = "${lead.name.replace(/"/g, '\\"')}", {Phone} = "${lead.phone.replace(/"/g, '\\"')}")`;
+      const checkResponse = await fetch(`${airtableUrl}?filterByFormula=${encodeURIComponent(formula)}`, {
+        headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` }
+      });
+      
+      const checkData = await checkResponse.json();
+      if (checkData.records && checkData.records.length > 0) {
+        console.log(`⏭️ Duplicate skipped: ${lead.name}`);
+        continue;
+      }
+
+      // 2. Create new record
+      const record = {
+        fields: {
+          "Business Name": lead.name,
+          "Niche": niche,
+          "Location": location,
+          "Phone": lead.phone,
+          "Website": lead.website,
+          "Address": lead.address,
+          "Rating": typeof lead.rating === 'number' ? lead.rating : 0,
+          "Reviews": lead.reviews || 0,
+          "AI Score": lead.score !== "N/A" ? parseInt(lead.score) : 0,
+          "Insight": lead.insight,
+          "Outreach Angle": lead.outreach_angle,
+          "Status": "New",
+          "Source": "Google Places"
+        }
+      };
+
+      const createResponse = await fetch(airtableUrl, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${AIRTABLE_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(record)
+      });
+
+      if (createResponse.ok) {
+        console.log(`✅ Airtable save success: ${lead.name}`);
+      } else {
+        const errData = await createResponse.json();
+        console.error(`❌ Airtable error for ${lead.name}:`, errData);
+      }
+    } catch (err) {
+      console.error(`❌ Failed to process Airtable lead ${lead.name}:`, err);
+    }
+  }
+}
 
 /**
  * TELEGRAM WEBHOOK HANDLER
@@ -47,20 +117,12 @@ app.post("/telegram/webhook", async (req, res) => {
       const niche = parts[1] || "businesses";
       const location = parts.slice(2).join(" ") || "USA";
 
-      // Call internal /execute endpoint for lead generation + scoring
       const runtimeResponse = await fetch(`http://localhost:${port}/execute`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           task: `Find ${niche} leads in ${location}`,
-          data: {
-            type: "lead_generation",
-            niche,
-            location,
-            limit: 5
-          }
+          data: { type: "lead_generation", niche, location, limit: 5 }
         })
       });
 
@@ -72,33 +134,24 @@ app.post("/telegram/webhook", async (req, res) => {
             return `🏢 *${r.name}*\n📍 ${r.address}\n📞 ${r.phone}\n🌐 ${r.website}\n⭐ *Score: ${r.score}/10*\n🧠 *Insight:* ${r.insight}\n🎯 *Outreach:* ${r.outreach_angle}`;
           })
           .join("\n\n---\n\n");
+        responseText += `\n\n🗄️ *Status:* Leads synced to Airtable.`;
       } else {
         responseText = result.message || "No leads found";
       }
     }
 
-    if (!TELEGRAM_TOKEN) {
-      console.error("Missing TELEGRAM_BOT_TOKEN");
-      return res.sendStatus(500);
-    }
+    if (!TELEGRAM_TOKEN) return res.sendStatus(500);
 
-    // Send response back to Telegram
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: responseText,
-        parse_mode: "Markdown"
-      })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text: responseText, parse_mode: "Markdown" })
     });
 
     res.sendStatus(200);
   } catch (err) {
     console.error("Telegram webhook error:", err);
-    res.sendStatus(200); // Always return 200 to Telegram to prevent retry loops
+    res.sendStatus(200);
   }
 });
 
@@ -107,10 +160,7 @@ app.post("/telegram/webhook", async (req, res) => {
  */
 app.post("/execute", async (req, res) => {
   const { task, data } = req.body;
-
-  if (!task) {
-    return res.status(400).json({ success: false, error: "Missing task" });
-  }
+  if (!task) return res.status(400).json({ success: false, error: "Missing task" });
 
   try {
     if (data?.type === "lead_generation") {
@@ -118,13 +168,11 @@ app.post("/execute", async (req, res) => {
       const location = data.location || "USA";
       const limit = data.limit || 5;
 
-      if (!GOOGLE_PLACES_API_KEY) {
-        return res.status(500).json({ success: false, message: "Missing GOOGLE_PLACES_API_KEY" });
-      }
+      if (!GOOGLE_PLACES_API_KEY) return res.status(500).json({ success: false, message: "Missing GOOGLE_PLACES_API_KEY" });
 
       const query = `${niche} in ${location}`;
 
-      // 1. Fetch leads from Google Places API (New V1 API)
+      // 1. Fetch from Google Places
       const googleResponse = await fetch("https://places.googleapis.com/v1/places:searchText", {
         method: "POST",
         headers: {
@@ -132,21 +180,12 @@ app.post("/execute", async (req, res) => {
           "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
           "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount"
         },
-        body: JSON.stringify({
-          textQuery: query,
-          maxResultCount: limit
-        })
+        body: JSON.stringify({ textQuery: query, maxResultCount: limit })
       });
 
       const googleResult = await googleResponse.json();
-
-      if (!googleResponse.ok) {
-        return res.status(googleResponse.status).json({ success: false, message: "Google Places API error", raw: googleResult });
-      }
-
-      if (!googleResult.places || googleResult.places.length === 0) {
-        return res.json({ success: false, message: `No results found for: ${query}`, results: [] });
-      }
+      if (!googleResponse.ok) return res.status(googleResponse.status).json({ success: false, message: "Google Places API error", raw: googleResult });
+      if (!googleResult.places || googleResult.places.length === 0) return res.json({ success: false, message: `No results found for: ${query}`, results: [] });
 
       const rawLeads = googleResult.places.map((place) => ({
         name: place.displayName?.text || "N/A",
@@ -157,28 +196,11 @@ app.post("/execute", async (req, res) => {
         reviews: place.userRatingCount || 0
       }));
 
-      // 2. Enrich and Score Leads using OpenAI
+      // 2. Score with OpenAI
       let leads = rawLeads;
       if (OPENAI_API_KEY) {
         try {
-          const aiPrompt = `
-            You are an elite business analyst for Cresca OS.
-            Score these business leads for a marketing outreach campaign.
-            Industry: ${niche}
-            Location: ${location}
-
-            Leads:
-            ${JSON.stringify(rawLeads, null, 2)}
-
-            For each lead, provide:
-            1. A score from 1-10 based on business opportunity.
-            2. A short insight (e.g., weak online presence, strong reviews but no automation).
-            3. A concise outreach angle.
-
-            Return the output as a valid JSON object with a "leads" array.
-            Format: { "leads": [ { "name": "...", "score": 9, "insight": "...", "outreach_angle": "..." } ] }
-          `;
-
+          const aiPrompt = `Score these business leads for ${niche} in ${location}.\n\nLeads:\n${JSON.stringify(rawLeads, null, 2)}\n\nReturn JSON: { "leads": [ { "name": "...", "score": 9, "insight": "...", "outreach_angle": "..." } ] }`;
           const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -188,7 +210,7 @@ app.post("/execute", async (req, res) => {
             body: JSON.stringify({
               model: "gpt-4o-mini",
               messages: [
-                { role: "system", content: "You are a direct-response marketing expert. Respond only in JSON." },
+                { role: "system", content: "You are an elite business analyst. Respond only in JSON." },
                 { role: "user", content: aiPrompt }
               ],
               response_format: { type: "json_object" }
@@ -199,7 +221,6 @@ app.post("/execute", async (req, res) => {
           if (aiResponse.ok) {
             const content = JSON.parse(aiResult.choices[0].message.content);
             const scoredData = content.leads || [];
-            
             leads = rawLeads.map(lead => {
               const aiData = scoredData.find(s => s.name === lead.name) || {};
               return {
@@ -211,28 +232,25 @@ app.post("/execute", async (req, res) => {
             });
           }
         } catch (aiErr) {
-          console.error("OpenAI scoring error:", aiErr);
-          // Fallback to raw leads if AI processing fails
+          console.error("OpenAI error:", aiErr);
           leads = rawLeads.map(l => ({ ...l, score: "N/A", insight: "AI Scoring failed.", outreach_angle: "Review manually." }));
         }
       }
 
+      // 3. Automatically Save to Airtable
+      // We don't await this to keep the response fast, but it runs in the background.
+      saveLeadsToAirtable(leads, niche, location);
+
       return res.json({
         success: true,
         type: "lead_generation",
-        message: "Real leads enriched with OpenAI scoring",
+        message: "Real leads enriched and synced to Airtable",
         query,
         results: leads
       });
     }
 
-    return res.json({
-      success: true,
-      message: "Task received but no handler implemented",
-      task,
-      data
-    });
-
+    return res.json({ success: true, message: "Task received", task, data });
   } catch (error) {
     console.error("Execute error:", error);
     return res.status(500).json({ success: false, error: error.message });
@@ -240,7 +258,4 @@ app.post("/execute", async (req, res) => {
 });
 
 const port = process.env.PORT || 3000;
-
-app.listen(port, () => {
-  console.log(`Cresca Runtime running on port ${port}`);
-});
+app.listen(port, () => console.log(`Cresca Runtime running on port ${port}`));
