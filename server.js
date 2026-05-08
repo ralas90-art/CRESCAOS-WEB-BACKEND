@@ -18,6 +18,131 @@ const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
 const AIRTABLE_TABLE_NAME = process.env.AIRTABLE_TABLE_NAME;
 
+// GHL Config — CrescaOS Website Backend
+const GHL_ACCESS_TOKEN = process.env.GHL_ACCESS_TOKEN;
+const GHL_LOCATION_ID  = process.env.GHL_LOCATION_ID;
+const GHL_PIPELINE_ID  = process.env.GHL_PIPELINE_ID;
+const GHL_STAGE_ID     = process.env.GHL_STAGE_ID;
+const GHL_BASE         = 'https://services.leadconnectorhq.com';
+
+// ── GHL Helpers ───────────────────────────────────────────────────────────────
+async function ghlRequest(method, path, body) {
+  const res = await fetch(`${GHL_BASE}${path}`, {
+    method,
+    headers: {
+      'Authorization': `Bearer ${GHL_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+      'Version': '2021-07-28'
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`GHL ${method} ${path} failed: ${JSON.stringify(data)}`);
+  return data;
+}
+
+async function upsertGHLContact(payload) {
+  // Normalize name from diagnostic funnel (sends 'name' as first name only)
+  const nameParts = (payload.name || '').trim().split(' ');
+  const firstName = nameParts[0] || payload.firstName || 'Funnel';
+  const lastName  = nameParts.slice(1).join(' ') || payload.lastName || 'Lead';
+
+  const tags = ['cresca:diagnostic_completed'];
+  if (payload.language === 'es') tags.push('cresca:lang_es');
+  else tags.push('cresca:lang_en');
+
+  const body = {
+    locationId: GHL_LOCATION_ID,
+    firstName,
+    lastName,
+    tags,
+    ...(payload.email && { email: payload.email.toLowerCase() }),
+    ...(payload.phone && { phone: payload.phone }),
+    ...(payload.businessName && { companyName: payload.businessName })
+  };
+
+  return ghlRequest('POST', '/contacts/upsert', body);
+}
+
+async function addGHLNote(contactId, noteText) {
+  return ghlRequest('POST', `/contacts/${contactId}/notes`, { userId: '', body: noteText });
+}
+
+async function createGHLOpportunity(contactId, title) {
+  if (!GHL_PIPELINE_ID || !GHL_STAGE_ID) return null;
+  return ghlRequest('POST', '/opportunities/', {
+    pipelineId: GHL_PIPELINE_ID,
+    pipelineStageId: GHL_STAGE_ID,
+    locationId: GHL_LOCATION_ID,
+    name: title,
+    contactId,
+    monetaryValue: 0,
+    status: 'open'
+  });
+}
+
+// ── Public Diagnostic Funnel Webhook ─────────────────────────────────────────
+app.options('/api/webhook', (req, res) => res.sendStatus(200));
+
+app.post('/api/webhook', async (req, res) => {
+  const payload = req.body || {};
+  console.log('📥 /api/webhook received', { source: payload.source, email: payload.email });
+
+  if (!GHL_ACCESS_TOKEN || !GHL_LOCATION_ID) {
+    console.warn('⚠️ GHL credentials missing — skipping CRM sync');
+    return res.json({ success: true, warning: 'GHL credentials not configured' });
+  }
+
+  try {
+    // 1. Upsert GHL contact
+    const contactResult = await upsertGHLContact(payload);
+    const contactId = contactResult.contact?.id || contactResult.id;
+
+    if (contactId) {
+      // 2. Build attribution note
+      let note = `Source: ${payload.source || 'Diagnostic Funnel'}\n`;
+      if (payload.businessName) note += `Business: ${payload.businessName}\n`;
+      if (payload.businessType) note += `Type: ${payload.businessType}\n`;
+      if (payload.revenue)      note += `Revenue Stage: ${payload.revenue}\n`;
+      if (payload.bottleneck)   note += `Bottleneck: ${payload.bottleneck}\n`;
+      if (payload.responseTime) note += `Response Time: ${payload.responseTime}\n`;
+      if (payload.score)        note += `\nDiagnostic Score: ${payload.score}/100 (${payload.score_tier || 'N/A'})\n`;
+      if (payload.monthlyLoss)  note += `Est. Monthly Revenue Loss: $${Number(payload.monthlyLoss).toLocaleString()}\n`;
+
+      const tracking = [];
+      if (payload.utm_source)   tracking.push(`UTM Source: ${payload.utm_source}`);
+      if (payload.utm_medium)   tracking.push(`UTM Medium: ${payload.utm_medium}`);
+      if (payload.utm_campaign) tracking.push(`UTM Campaign: ${payload.utm_campaign}`);
+      if (payload.utm_content)  tracking.push(`UTM Content: ${payload.utm_content}`);
+      if (payload.utm_term)     tracking.push(`UTM Term: ${payload.utm_term}`);
+      if (payload.source_page)  tracking.push(`Source Page: ${payload.source_page}`);
+      if (payload.referrer)     tracking.push(`Referrer: ${payload.referrer}`);
+      if (tracking.length > 0)  note += `\n--- Attribution ---\n${tracking.join('\n')}`;
+
+      // 3. Add note (non-critical)
+      try { await addGHLNote(contactId, note); } catch (e) {
+        console.warn('Note creation skipped:', e.message);
+      }
+
+      // 4. Create opportunity
+      try {
+        const oppTitle = `DIAGNOSTIC: ${payload.businessName || payload.name || 'New Lead'}`;
+        await createGHLOpportunity(contactId, oppTitle);
+      } catch (e) {
+        console.warn('Opportunity creation skipped:', e.message);
+      }
+
+      console.log('✅ GHL contact synced:', contactId);
+    }
+
+    return res.json({ success: true, message: 'Lead synced to GHL.' });
+  } catch (err) {
+    console.error('❌ /api/webhook GHL sync error:', err.message);
+    // Return 200 so the frontend doesn't show an error to the user
+    return res.json({ success: true, warning: 'Synced with delay' });
+  }
+});
+
 // Base Routes
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "cresca-openclaw-runtime" });
