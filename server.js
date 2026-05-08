@@ -149,7 +149,15 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", service: "cresca-openclaw-runtime" });
 });
 
+app.get("/api", (req, res) => {
+  res.json({ status: "ok", service: "cresca-openclaw-runtime (api)" });
+});
+
 app.get("/health", (req, res) => {
+  res.json({ status: "healthy" });
+});
+
+app.get("/api/health", (req, res) => {
   res.json({ status: "healthy" });
 });
 
