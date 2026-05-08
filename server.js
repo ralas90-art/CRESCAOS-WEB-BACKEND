@@ -145,28 +145,119 @@ app.post('/api/webhook', async (req, res) => {
 });
 
 // ── Manus AI Lead Intelligence ────────────────────────────────────────────────
-app.post('/api/manus-lead-intel', (req, res) => {
+/**
+ * Manus AI Intelligence Analyzer
+ * Uses OpenAI to perform deep lead analysis based on diagnostic data.
+ */
+async function analyzeManusLead(payload) {
+  if (!OPENAI_API_KEY) {
+    console.warn('⚠️ OPENAI_API_KEY missing — using basic analysis');
+    return {
+      business_summary: `${payload.business_name || 'Business'} in ${payload.source || 'N/A'}`,
+      growth_friction: 'Diagnostic score: ' + (payload.diagnostic_score || 'N/A'),
+      recommendation: 'Manual review required'
+    };
+  }
+
+  const prompt = `
+    You are Manus AI, the elite lead intelligence engine for Cresca OS.
+    Analyze this new lead from our diagnostic funnel and provide a strategy report.
+
+    LEAD DATA:
+    - Business: ${payload.business_name || 'Unknown'}
+    - Contact: ${payload.name || 'Anonymous'}
+    - Score: ${payload.diagnostic_score}/100 (${payload.recommended_tier || 'N/A'})
+    - Source: ${payload.source || 'Diagnostic Funnel'}
+    - Email: ${payload.email || 'N/A'}
+
+    CONTEXT (Cresca OS Framework):
+    - 0-40 (Critical): Severe revenue leakage. Needs immediate automation.
+    - 41-65 (Leaking): Functional but inefficient. Needs better lead response.
+    - 66-80 (Functional): Solid base. Needs optimization & scaling.
+    - 81+ (Strong): High performance. Needs advanced AI systems.
+
+    TASK:
+    1. Summarize their business model based on the name/data.
+    2. Identify the likely "Acquisition Friction" they are facing.
+    3. Calculate the urgency for a Cresca OS deployment.
+    4. Provide a "Manus Master Hook" — a 1-sentence outreach line that mentions their specific score or tier.
+
+    OUTPUT JSON:
+    {
+      "summary": "...",
+      "friction_point": "...",
+      "urgency_level": "High/Medium/Low",
+      "manus_hook": "...",
+      "deployment_strategy": "..."
+    }
+  `;
+
   try {
-    const { contact_id, name, email, phone, business_name, source, diagnostic_score, recommended_tier } = req.body || {};
-    
-    // Log safe summary of the request
-    console.log('📥 Manus AI Lead Intel Payload Received', {
-      contact_id,
-      name,
-      email,
-      phone,
-      business_name,
-      source,
-      diagnostic_score,
-      recommended_tier
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "You are an elite lead intelligence AI. Respond only in JSON." },
+          { role: "user", content: prompt }
+        ],
+        response_format: { type: "json_object" }
+      })
     });
 
-    // Return success response to GHL
-    res.status(200).json({
+    const data = await res.json();
+    return JSON.parse(data.choices[0].message.content);
+  } catch (err) {
+    console.error('❌ OpenAI Analysis Error:', err.message);
+    return { error: 'Analysis failed' };
+  }
+}
+
+app.post('/api/manus-lead-intel', async (req, res) => {
+  const payload = req.body || {};
+  const contactId = payload.contact_id;
+
+  console.log('📥 /api/manus-lead-intel received:', contactId);
+
+  try {
+    // 1. Perform Intelligence Analysis
+    const intel = await analyzeManusLead(payload);
+    
+    if (contactId && GHL_ACCESS_TOKEN) {
+      // 2. Build Note
+      const noteLines = [
+        `🤖 --- MANUS AI INTELLIGENCE REPORT ---`,
+        `Business Summary: ${intel.summary || 'N/A'}`,
+        `Acquisition Friction: ${intel.friction_point || 'N/A'}`,
+        `Urgency: ${intel.urgency_level || 'N/A'}`,
+        `Strategy: ${intel.deployment_strategy || 'N/A'}`,
+        `\n🎯 MANUS MASTER HOOK:`,
+        `"${intel.manus_hook || 'N/A'}"`,
+        `\n-----------------------------------------`
+      ];
+
+      // 3. Update GHL (Note + Tag)
+      try {
+        await addGHLNote(contactId, noteLines.join('\n'));
+        await ghlRequest('POST', '/contacts/upsert', {
+          locationId: GHL_LOCATION_ID,
+          email: payload.email,
+          tags: ['cresca:manus_enriched']
+        });
+        console.log('✅ Manus Intelligence synced to GHL for:', contactId);
+      } catch (ghlErr) {
+        console.warn('⚠️ GHL Update failed during Manus intel:', ghlErr.message);
+      }
+    }
+
+    return res.status(200).json({
       success: true,
-      message: "Manus lead intelligence request received",
-      contact_id: contact_id || "unknown",
-      status: "queued"
+      intelligence: intel,
+      status: "processed"
     });
   } catch (err) {
     console.error('❌ Manus lead intel route error:', err.message);
@@ -175,7 +266,11 @@ app.post('/api/manus-lead-intel', (req, res) => {
 });
 
 app.get('/api/manus-lead-intel', (_req, res) => {
-  res.status(200).json({ ok: true, message: 'Manus lead intelligence endpoint active' });
+  res.status(200).json({ 
+    ok: true, 
+    message: 'Manus lead intelligence endpoint active',
+    version: '1.1.0 (Enriched)'
+  });
 });
 
 // Base Routes
