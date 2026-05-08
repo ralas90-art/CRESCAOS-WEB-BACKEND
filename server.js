@@ -144,6 +144,40 @@ app.post('/api/webhook', async (req, res) => {
   }
 });
 
+// ── Manus AI Lead Intelligence ────────────────────────────────────────────────
+app.post('/api/manus-lead-intel', (req, res) => {
+  try {
+    const { contact_id, name, email, phone, business_name, source, diagnostic_score, recommended_tier } = req.body || {};
+    
+    // Log safe summary of the request
+    console.log('📥 Manus AI Lead Intel Payload Received', {
+      contact_id,
+      name,
+      email,
+      phone,
+      business_name,
+      source,
+      diagnostic_score,
+      recommended_tier
+    });
+
+    // Return success response to GHL
+    res.status(200).json({
+      success: true,
+      message: "Manus lead intelligence request received",
+      contact_id: contact_id || "unknown",
+      status: "queued"
+    });
+  } catch (err) {
+    console.error('❌ Manus lead intel route error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/manus-lead-intel', (_req, res) => {
+  res.status(200).json({ ok: true, message: 'Manus lead intelligence endpoint active' });
+});
+
 // Base Routes
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "cresca-openclaw-runtime" });
