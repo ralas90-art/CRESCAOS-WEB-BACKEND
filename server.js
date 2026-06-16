@@ -51,12 +51,14 @@ async function upsertGHLContact(payload) {
   const tags = ['cresca:diagnostic_completed'];
   if (payload.language === 'es') tags.push('cresca:lang_es');
   else tags.push('cresca:lang_en');
+  if (payload.service) tags.push(`cresca:service_${payload.service}`);
 
   const body = {
     locationId: GHL_LOCATION_ID,
     firstName,
     lastName,
     tags,
+    source: payload.utm_source || payload.source || 'Diagnostic Funnel',
     ...(payload.email && { email: payload.email.toLowerCase() }),
     ...(payload.phone && { phone: payload.phone }),
     ...(payload.businessName && { companyName: payload.businessName })
@@ -102,6 +104,7 @@ app.post('/api/webhook', async (req, res) => {
     if (contactId) {
       // 2. Build attribution note
       let note = `Source: ${payload.source || 'Diagnostic Funnel'}\n`;
+      if (payload.service)      note += `Service Interest: ${payload.service}\n`;
       if (payload.businessName) note += `Business: ${payload.businessName}\n`;
       if (payload.businessType) note += `Type: ${payload.businessType}\n`;
       if (payload.revenue)      note += `Revenue Stage: ${payload.revenue}\n`;
