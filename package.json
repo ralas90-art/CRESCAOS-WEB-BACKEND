@@ -1,10 +1,10 @@
 {
   "name": "openclaw",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Cresca OS Backend Service",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node test/remediation.test.js",
     "start": "node server.js"
   },
   "repository": {
@@ -12,14 +12,11 @@
     "url": "git+https://github.com/ralas90-art/openclaw-server.git"
   },
   "keywords": [],
-  "author": "",
+  "author": "Cresca OS",
   "license": "ISC",
   "type": "commonjs",
-  "bugs": {
-    "url": "https://github.com/ralas90-art/openclaw-server/issues"
-  },
-  "homepage": "https://github.com/ralas90-art/openclaw-server#readme",
   "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
